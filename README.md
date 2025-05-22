@@ -1,6 +1,6 @@
 # CardRanker: Final Fantasy Set
 
-A simple Flask web app to vote on Magic: The Gathering cards from the newest set (Final Fantasy, set code: `ffxvi`) using the Scryfall API. Card ratings are updated using the Elo system and stored locally.
+A simple Flask web app to vote on Magic: The Gathering cards from the newest set (Final Fantasy, set code: `fin`) using the Scryfall API. Card ratings are updated using the Elo system and stored locally.
 
 ## Setup
 

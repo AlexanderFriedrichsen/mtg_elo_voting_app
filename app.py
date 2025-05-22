@@ -3,15 +3,29 @@ import json
 import random
 import requests
 from flask import Flask, render_template_string, request, redirect, url_for, jsonify
+from sqlalchemy import create_engine, Column, String, Float
+from sqlalchemy.orm import sessionmaker, declarative_base
 
 app = Flask(__name__)
 
 # Scryfall set code for Final Fantasy (as of June 2024)
 NEWEST_SET_CODE = 'fin'  # Update if the set code changes
-DATA_FILE = 'card_ratings.json'
+DB_FILE = 'sqlite:///card_ratings.db'
 ELO_K = 32
 
 CARD_CACHE = []
+
+# SQLAlchemy setup
+Base = declarative_base()
+engine = create_engine(DB_FILE, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+
+class CardRating(Base):
+    __tablename__ = 'card_ratings'
+    card_id = Column(String, primary_key=True)
+    elo = Column(Float, default=1200)
+
+Base.metadata.create_all(bind=engine)
 
 # HTML template with tabs and JS for voting and animation
 TEMPLATE = '''
@@ -29,7 +43,7 @@ TEMPLATE = '''
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .cards { display: flex; justify-content: space-around; }
-        .card { text-align: center; transition: opacity 1.2s; }
+        .card { text-align: center; transition: opacity 0.6s; }
         .card.fade { opacity: 0.2; }
         img { max-width: 300px; border-radius: 8px; box-shadow: 0 2px 8px #aaa; }
         button { margin-top: 10px; padding: 10px 20px; font-size: 16px; border-radius: 5px; border: none; background: #0078d7; color: #fff; cursor: pointer; }
@@ -111,7 +125,7 @@ TEMPLATE = '''
                 el.style.display = 'block';
                 cardDiv.classList.add('fade');
             }
-            setTimeout(()=>{ window.location.reload(); }, 1700);
+            setTimeout(()=>{ window.location.reload(); }, 900);
         });
     }
     </script>
@@ -120,7 +134,7 @@ TEMPLATE = '''
 '''
 
 def fetch_cards():
-    """Fetch all cards from the newest set and cache them."""
+    """Fetch all cards from the newest set and cache them, filtering out basic lands and non-draft-legal cards."""
     global CARD_CACHE
     if CARD_CACHE:
         return CARD_CACHE
@@ -129,20 +143,35 @@ def fetch_cards():
     while url:
         resp = requests.get(url)
         data = resp.json()
-        cards.extend([c for c in data['data'] if 'image_uris' in c])
+        for c in data['data']:
+            if 'image_uris' not in c:
+                continue
+            # Filter out basic lands
+            if 'Basic Land' in c.get('type_line', ''):
+                continue
+            # Filter out cards not legal in draft
+            if c.get('legalities', {}).get('draft', '') != 'legal':
+                continue
+            cards.append(c)
         url = data.get('next_page')
     CARD_CACHE = cards
     return cards
 
-def load_ratings():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+def get_rating(session, card_id):
+    rating = session.query(CardRating).filter_by(card_id=card_id).first()
+    if rating:
+        return rating.elo
+    else:
+        return 1200.0
 
-def save_ratings(ratings):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(ratings, f, indent=2)
+def set_rating(session, card_id, elo):
+    rating = session.query(CardRating).filter_by(card_id=card_id).first()
+    if rating:
+        rating.elo = elo
+    else:
+        rating = CardRating(card_id=card_id, elo=elo)
+        session.add(rating)
+    session.commit()
 
 def get_elo(r1, r2, winner):
     """Update Elo ratings for two players."""
@@ -165,13 +194,13 @@ def index():
 @app.route('/data')
 def data():
     cards = fetch_cards()
-    ratings = load_ratings()
-    # Build a list of dicts with name and elo, sorted by elo descending
+    session = SessionLocal()
     card_list = []
     for card in cards:
-        elo = ratings.get(card['id'], 1200)
+        elo = get_rating(session, card['id'])
         card_list.append({'name': card['name'], 'elo': elo})
     card_list.sort(key=lambda x: x['elo'], reverse=True)
+    session.close()
     return jsonify(card_list)
 
 @app.route('/vote', methods=['POST'])
@@ -180,9 +209,9 @@ def vote():
     winner_id = data['winner']
     card1_id = data['card1']
     card2_id = data['card2']
-    ratings = load_ratings()
-    r1 = ratings.get(card1_id, 1200)
-    r2 = ratings.get(card2_id, 1200)
+    session = SessionLocal()
+    r1 = get_rating(session, card1_id)
+    r2 = get_rating(session, card2_id)
     if winner_id == card1_id:
         new_r1, new_r2 = get_elo(r1, r2, 1)
         change1 = round(new_r1 - r1, 2)
@@ -191,9 +220,9 @@ def vote():
         new_r1, new_r2 = get_elo(r1, r2, 2)
         change1 = round(new_r1 - r1, 2)
         change2 = round(new_r2 - r2, 2)
-    ratings[card1_id] = new_r1
-    ratings[card2_id] = new_r2
-    save_ratings(ratings)
+    set_rating(session, card1_id, new_r1)
+    set_rating(session, card2_id, new_r2)
+    session.close()
     return jsonify({
         'elo1': new_r1, 'elo2': new_r2,
         'change1': change1, 'change2': change2
