@@ -2,6 +2,7 @@ import os
 import json
 import random
 import requests
+import time
 from flask import Flask, render_template_string, request, redirect, url_for, jsonify
 from sqlalchemy import create_engine, Column, String, Float
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -138,23 +139,32 @@ def fetch_cards():
     global CARD_CACHE
     if CARD_CACHE:
         return CARD_CACHE
+    headers = {
+        "User-Agent": "CardRankerApp/1.0 (your-email@example.com)",
+        "Accept": "application/json"
+    }
     url = f'https://api.scryfall.com/cards/search?order=set&q=e%3A{NEWEST_SET_CODE}&unique=prints'
     cards = []
+    seen_names = set()
     while url:
-        resp = requests.get(url)
+        resp = requests.get(url, headers=headers)
         data = resp.json()
         for c in data['data']:
             if 'image_uris' not in c:
                 continue
-            # Filter out basic lands
             if 'Basic Land' in c.get('type_line', ''):
                 continue
-            # Filter out cards not legal in draft
-            if c.get('legalities', {}).get('draft', '') != 'legal':
+            if c['name'] in seen_names:
                 continue
+            seen_names.add(c['name'])
             cards.append(c)
         url = data.get('next_page')
+        if url:
+            time.sleep(0.1)  # Be nice to Scryfall!
     CARD_CACHE = cards
+    print(f"Fetched {len(cards)} unique-named cards after filtering.")
+    if len(cards) > 0:
+        print("First few cards:", [c['name'] for c in cards[:5]])
     return cards
 
 def get_rating(session, card_id):
