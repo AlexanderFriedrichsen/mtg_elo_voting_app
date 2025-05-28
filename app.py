@@ -75,7 +75,7 @@ TEMPLATE = '''
                     <div class="card" id="card{{ loop.index }}" style="position:relative;">
                         <img src="{{ card['image_uris']['normal'] }}" alt="{{ card['name'] }}"><br>
                         <strong>{{ card['name'] }}</strong><br>
-                        <button type="button" onclick="vote('{{ card['id'] }}')">Vote</button>
+                        <button type="button" onclick="vote('{{ card['id'] }}', this)">Vote</button>
                         <input type="hidden" name="card{{ loop.index }}" value="{{ card['id'] }}">
                         <div class="elo-change sticky" id="elo{{ loop.index }}"></div>
                     </div>
@@ -109,29 +109,28 @@ TEMPLATE = '''
             document.getElementById('elo-table').innerHTML = html;
         });
     }
-    function vote(winnerId) {
+    function vote(winnerId, btn) {
+        // Disable all vote buttons to prevent multiple submissions
+        let buttons = document.querySelectorAll('button');
+        buttons.forEach(b => b.disabled = true);
         let form = document.getElementById('vote-form');
         let card1 = form.card1.value;
         let card2 = form.card2.value;
-        fetch('/vote', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({winner: winnerId, card1: card1, card2: card2})
-        }).then(r => r.json()).then(data => {
-            // Show Elo changes and fade out
-            for(let i=1;i<=2;i++) {
-                let el = document.getElementById('elo'+i);
-                let cardDiv = document.getElementById('card'+i);
-                let change = data['change'+i];
-                let elo = data['elo'+i];
-                let sign = change > 0 ? '+' : '';
-                el.innerHTML = `Elo: ${elo} (<span class='${change>=0?'':'elo-minus'}'>${sign}${change}</span>)`;
-                el.style.opacity = 1;
-                el.style.display = 'block';
-                cardDiv.classList.add('fade');
-            }
-            setTimeout(()=>{ window.location.reload(); }, 900);
-        });
+        let votes = JSON.parse(localStorage.getItem('votes') || '[]');
+        votes.push({winner: winnerId, card1: card1, card2: card2});
+        if (votes.length >= 10) {
+            fetch('/batch_vote', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({votes: votes})
+            }).then(r => r.json()).then(data => {
+                localStorage.removeItem('votes');
+                window.location.reload();
+            });
+        } else {
+            localStorage.setItem('votes', JSON.stringify(votes));
+            window.location.reload();
+        }
     }
     </script>
 </body>
@@ -217,30 +216,30 @@ def data():
     session.close()
     return jsonify(card_list)
 
-@app.route('/vote', methods=['POST'])
-def vote():
+@app.route('/batch_vote', methods=['POST'])
+def batch_vote():
     data = request.get_json()
-    winner_id = data['winner']
-    card1_id = data['card1']
-    card2_id = data['card2']
+    votes = data.get('votes', [])
     session = SessionLocal()
-    r1 = get_rating(session, card1_id)
-    r2 = get_rating(session, card2_id)
-    if winner_id == card1_id:
-        new_r1, new_r2 = get_elo(r1, r2, 1)
-        change1 = round(new_r1 - r1, 2)
-        change2 = round(new_r2 - r2, 2)
-    else:
-        new_r1, new_r2 = get_elo(r1, r2, 2)
-        change1 = round(new_r1 - r1, 2)
-        change2 = round(new_r2 - r2, 2)
-    set_rating(session, card1_id, new_r1)
-    set_rating(session, card2_id, new_r2)
+    results = []
+    for vote in votes:
+        winner_id = vote['winner']
+        card1_id = vote['card1']
+        card2_id = vote['card2']
+        r1 = get_rating(session, card1_id)
+        r2 = get_rating(session, card2_id)
+        if winner_id == card1_id:
+            new_r1, new_r2 = get_elo(r1, r2, 1)
+        else:
+            new_r1, new_r2 = get_elo(r1, r2, 2)
+        set_rating(session, card1_id, new_r1)
+        set_rating(session, card2_id, new_r2)
+        results.append({
+            'card1': card1_id, 'card2': card2_id,
+            'elo1': new_r1, 'elo2': new_r2
+        })
     session.close()
-    return jsonify({
-        'elo1': new_r1, 'elo2': new_r2,
-        'change1': change1, 'change2': change2
-    })
+    return jsonify({'results': results, 'message': f'Processed {len(votes)} votes.'})
 
 if __name__ == '__main__':
     app.run(debug=True) 
