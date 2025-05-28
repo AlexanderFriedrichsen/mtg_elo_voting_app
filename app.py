@@ -6,20 +6,24 @@ import time
 from flask import Flask, render_template_string, request, redirect, url_for, jsonify
 from sqlalchemy import create_engine, Column, String, Float
 from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 
+# Load environment variables from .env if present
+load_dotenv()
+
 # Scryfall set code for Final Fantasy (as of June 2024)
 NEWEST_SET_CODE = 'fin'  # Update if the set code changes
-DB_FILE = 'sqlite:///card_ratings.db'
+DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///card_ratings.db')
 ELO_K = 32
 
 CARD_CACHE = []
 
 # SQLAlchemy setup
-Base = declarative_base()
-engine = create_engine(DB_FILE, connect_args={"check_same_thread": False})
+engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
 
 class CardRating(Base):
     __tablename__ = 'card_ratings'
